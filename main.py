@@ -39,24 +39,30 @@ class WillScraper:
             return default
 
     def get_last_scraped_date(self):
-        """Get the last date from the most recent month's sheet in Google Sheets."""
+        """Get the last 'Date of Death' from the most recent month's sheet in Google Sheets."""
         service = build('sheets', 'v4', credentials=self.get_google_credentials())
         last_month = datetime.now().month - 1 if datetime.now().month > 1 else 12
         last_month_sheet = f"{self.YEAR}-{last_month:02d}"
 
         try:
+            # Column E is Date of Death
             result = service.spreadsheets().values().get(
                 spreadsheetId=self.SPREADSHEET_ID,
-                range=f"'{last_month_sheet}'!A:A"  # Get the first column (Date of Death)
+                range=f"'{last_month_sheet}'!E:E"  # <-- Date of Death column
             ).execute()
             values = result.get('values', [])
+
             if values:
-                # Get the last date in the first column
-                last_date_str = values[-1][0]
-                return datetime.strptime(last_date_str, "%m/%d/%Y")  # Adjust date format as necessary
+                # Skip header row if present
+                date_values = [row[0] for row in values if row and row[0] != "Date of Death"]
+
+                if date_values:
+                    last_date_str = date_values[-1]  # last non-header date
+                    return datetime.strptime(last_date_str, "%m/%d/%Y")
         except Exception as e:
             print(f"Error retrieving last date: {e}")
         return None
+
 
     def create_sheet_if_missing(self, service, sheet_name):
         """Create a sheet if it doesn't already exist."""
