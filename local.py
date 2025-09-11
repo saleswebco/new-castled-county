@@ -71,81 +71,76 @@ class WillScraper:
 
         self.process_results(month)
 
-    def process_results(self, month: int):
-        """Process all rows in search results for a given month"""
+    def process_results(self, date: datetime):
+        """Process results for a given day."""
+        print("📊 Processing search results...")
         rows = self.driver.find_elements(By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
 
-        # skip header row
         for row_index in range(1, len(rows)):
-            retries = 0
-            success = False
+            retries, success = 0, False
 
             while retries < self.MAX_RETRIES and not success:
                 try:
-                    # Re-find row each loop because DOM resets after back navigation
                     rows = self.driver.find_elements(By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
                     row = rows[row_index]
                     cols = row.find_elements(By.TAG_NAME, "td")
                     if not cols:
                         break
 
+                    death_date = cols[4].text.strip()
+                    if death_date != date.strftime("%m/%d/%Y"):
+                        break
+
                     last_name = cols[1].text.strip()
                     first_name = cols[2].text.strip()
-                    death_date = cols[4].text.strip()
+                    print(f"➡️ Found record: {last_name}, {first_name}, DoD {death_date}")
 
-                    # Click Details
                     details_link = cols[0].find_element(By.TAG_NAME, "a")
                     self.driver.execute_script("arguments[0].click();", details_link)
-
-                    # Wait for details page
-                    self.wait.until(EC.presence_of_element_located(
-                        (By.XPATH, "//h2[text()='Personal Representatives']")
-                    ))
-
-                    # Extract PR table
-                    pr_table = self.driver.find_elements(
-                        By.XPATH, "//h2[text()='Personal Representatives']/following-sibling::table[1]/tbody/tr"
+                    self.wait.until(
+                        EC.presence_of_element_located(
+                            (By.XPATH, "//h2[text()='Personal Representatives'] | //h2[text()='Decedent Information']")
+                        )
                     )
 
-                    if len(pr_table) > 1:  # skip header row
-                        for rep_row in pr_table[1:]:
-                            rep_cols = rep_row.find_elements(By.TAG_NAME, "td")
-                            pr_name = rep_cols[0].text.strip()
-                            pr_address = " ".join([c.text.strip() for c in rep_cols[1:]])
+                    # Prefer Administration date, fallback to Testamentary
+                    estate_date = self.safe_find(
+                        "//label[contains(text(),'Date Estate Opened (Administration)')]/../following-sibling::td"
+                    )
+                    if not estate_date:
+                        estate_date = self.safe_find(
+                            "//label[contains(text(),'Date Estate Opened (Testamentary)')]/../following-sibling::td"
+                        )
 
-                            estate_date = self.safe_find(
-                                "//label[contains(text(),'Date Estate Opened')]/../following-sibling::td"
-                            )
-                            decedent_address = self.safe_find(
-                                "//label[contains(text(),'Decedent Address')]/../following-sibling::td"
-                            )
+                    decedent_address = self.safe_find("//label[contains(text(),'Decedent Address')]/../following-sibling::td")
 
-                            self.results.append({
-                                "Year": self.YEAR,
-                                "Month": month,
-                                "Last Name": last_name,
-                                "First Name": first_name,
-                                "Date of Death": death_date,
-                                "Personal Representative Name": pr_name,
-                                "Personal Representative Address": pr_address,
-                                "Date Estate Opened": estate_date,
-                                "Decedent Address": decedent_address,
-                            })
+                    # Save record (always save decedent info)
+                    self.results.append({
+                        "Year": date.year,
+                        "Month": date.month,
+                        "Last Name": last_name,
+                        "First Name": first_name,
+                        "Date of Death": death_date,
+                        "Personal Representative Name": "",
+                        "Personal Representative Address": "",
+                        "Date Estate Opened": estate_date,
+                        "Decedent Address": decedent_address,
+                    })
 
-                    # Go back
                     self.driver.back()
-                    self.wait.until(EC.presence_of_element_located(
-                        (By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
-                    ))
-
+                    self.wait.until(
+                        EC.presence_of_element_located(
+                            (By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
+                        )
+                    )
+                    time.sleep(1)
                     success = True
-
                 except Exception as e:
                     retries += 1
-                    print(f"[Retry {retries}/{self.MAX_RETRIES}] Error on row {row_index} (month {month}): {e}")
+                    print(f"[Retry {retries}/{self.MAX_RETRIES}] Error on row {row_index} ({date}): {e}")
                     time.sleep(2)
                     if retries == self.MAX_RETRIES:
-                        print(f"❌ Skipping row {row_index} in {self.YEAR}-{month} after {self.MAX_RETRIES} retries")
+                        print(f"❌ Skipping row {row_index} on {date}")
 
     def get_last_scraped_month(self):
         """Check the last month already scraped"""

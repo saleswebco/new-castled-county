@@ -416,7 +416,15 @@ class WillScraper:
                         )
                     )
 
-                    estate_date = self.safe_find("//label[contains(text(),'Date Estate Opened')]/../following-sibling::td")
+                    # Prefer Administration date, fallback to Testamentary
+                    estate_date = self.safe_find(
+                        "//label[contains(text(),'Date Estate Opened (Administration)')]/../following-sibling::td"
+                    )
+                    if not estate_date:
+                        estate_date = self.safe_find(
+                            "//label[contains(text(),'Date Estate Opened (Testamentary)')]/../following-sibling::td"
+                        )
+
                     decedent_address = self.safe_find("//label[contains(text(),'Decedent Address')]/../following-sibling::td")
 
                     # Save record (always save decedent info)
@@ -500,7 +508,7 @@ class WillScraper:
             self.save_to_google_sheets()
             self.results = []
             current_date += timedelta(days=1)
-            
+
         # Update summary after scraping all data
         service = build("sheets", "v4", credentials=self.get_google_credentials())
         self.update_summary(service)
