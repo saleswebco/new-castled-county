@@ -69,7 +69,7 @@ class WillScraper:
             service.spreadsheets().batchUpdate(spreadsheetId=self.SPREADSHEET_ID, body=body).execute()
             print(f"✓ Created sheet: {sheet_name}")
 
-    def search_month(self, month: int, start_date: str):
+    def search_month(self, month: int, start_date: datetime = None):
         """Perform search for a given month starting from a specific date."""
         self.driver.get(self.BASE_URL)
         self.wait.until(EC.presence_of_element_located(
@@ -77,22 +77,19 @@ class WillScraper:
         ))
 
         # Fill year & month
+        self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxYear").clear()
         self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxYear").send_keys(self.YEAR)
+
+        self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxMonth").clear()
         self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxMonth").send_keys(str(month))
+
+        # If we have a start_date in this month → fill day
+        if start_date and start_date.year == int(self.YEAR) and start_date.month == month:
+            self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxDay").clear()
+            self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxDay").send_keys(str(start_date.day))
 
         # Click Search
         self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__ButtonSearch").click()
-
-        # Wait for results table
-        try:
-            self.wait.until(EC.presence_of_element_located(
-                (By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
-            ))
-        except:
-            print(f"No results for {self.YEAR}-{month}")
-            return
-
-        self.process_results(month, start_date)
 
     def process_results(self, month: int, start_date: str):
         """Process all rows in search results for a given month."""
@@ -203,19 +200,18 @@ class WillScraper:
 
     def run(self):
         last_date = self.get_last_scraped_date()
-        start_date = last_date + timedelta(days=1) if last_date else None  # Start from the day after the last date
+        start_date = last_date + timedelta(days=1) if last_date else None
         current_month = datetime.now().month
         current_year = datetime.now().year
 
-        # Check if we need to update the year
         if int(self.YEAR) < current_year:
             self.YEAR = str(current_year)
 
         for month in range(1, current_month + 1):
             print(f"🔎 Searching {self.YEAR}-{month}")
-            self.search_month(month, start_date.strftime("%m/%d/%Y") if start_date else None)
+            self.search_month(month, start_date)
             self.save_to_google_sheets()
-            self.results = []  # Clear buffer after saving
+            self.results = []
 
         self.driver.quit()
 
