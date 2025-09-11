@@ -500,9 +500,52 @@ class WillScraper:
             self.save_to_google_sheets()
             self.results = []
             current_date += timedelta(days=1)
-
+            
+        # Update summary after scraping all data
+        service = build("sheets", "v4", credentials=self.get_google_credentials())
+        self.update_summary(service)
         self.driver.quit()
         print("🏁 Finished scraping!")
+
+    def update_summary(self, service):
+        """Create/update a summary sheet with counts by month."""
+        print("📑 Updating Summary sheet...")
+        self.create_sheet_if_missing(service, "Summary")
+
+        # Collect all sheet names except "Summary"
+        spreadsheet = service.spreadsheets().get(
+            spreadsheetId=self.SPREADSHEET_ID
+        ).execute()
+        sheet_titles = [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
+        data = [["Sheet", "Total Records", "Last Updated"]]
+
+        for title in sheet_titles:
+            if title == "Summary":
+                continue
+            try:
+                result = service.spreadsheets().values().get(
+                    spreadsheetId=self.SPREADSHEET_ID,
+                    range=f"'{title}'!A:A"
+                ).execute()
+                values = result.get("values", [])
+                total = len(values) - 1 if values else 0  # exclude header if present
+                data.append([title, total, datetime.now().strftime("%Y-%m-%d %H:%M")])
+            except Exception as e:
+                print(f"⚠️ Could not read {title}: {e}")
+
+        # Clear and rewrite the Summary sheet
+        service.spreadsheets().values().clear(
+            spreadsheetId=self.SPREADSHEET_ID,
+            range="Summary!A:Z"
+        ).execute()
+        service.spreadsheets().values().update(
+            spreadsheetId=self.SPREADSHEET_ID,
+            range="Summary!A1",
+            valueInputOption="RAW",
+            body={"values": data},
+        ).execute()
+        print("✅ Summary sheet updated")
+
 
 
 if __name__ == "__main__":
