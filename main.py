@@ -1,8 +1,8 @@
 import os
 import time
 import json
-import pandas as pd
 from datetime import datetime, timedelta
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from selenium import webdriver
@@ -18,6 +18,7 @@ class WillScraper:
     SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
 
     def __init__(self, headless=False):
+        print("🚀 Initializing WebDriver...")
         options = webdriver.ChromeOptions()
         if headless:
             options.add_argument("--headless=new")
@@ -40,35 +41,33 @@ class WillScraper:
 
     def get_last_scraped_date(self):
         """Get the last 'Date of Death' from the most recent month's sheet in Google Sheets."""
+        print("📅 Checking last scraped date from Google Sheets...")
         service = build('sheets', 'v4', credentials=self.get_google_credentials())
         now = datetime.now()
         last_month = now.month - 1 if now.month > 1 else 12
         last_year = now.year if now.month > 1 else now.year - 1
-        last_month_sheet = f"{last_year}-{last_month:02d}"   # <-- FIXED zero-padded
+        last_month_sheet = f"{last_year}-{last_month:02d}"
 
         try:
-            # Column E is Date of Death
             result = service.spreadsheets().values().get(
                 spreadsheetId=self.SPREADSHEET_ID,
-                range=f"'{last_month_sheet}'!E:E"  # <-- Date of Death column
+                range=f"'{last_month_sheet}'!E:E"
             ).execute()
             values = result.get('values', [])
-
             if values:
-                # Skip header row if present
                 date_values = [row[0] for row in values if row and row[0] != "Date of Death"]
-
                 if date_values:
-                    last_date_str = date_values[-1]  # last non-header date
-                    return datetime.strptime(last_date_str, "%m/%d/%Y")
+                    last_date_str = date_values[-1]
+                    last_date = datetime.strptime(last_date_str, "%m/%d/%Y")
+                    print(f"✅ Last scraped date: {last_date_str}")
+                    return last_date
         except Exception as e:
-            print(f"Error retrieving last date from sheet '{last_month_sheet}': {e}")
+            print(f"⚠️ Could not retrieve last date from sheet '{last_month_sheet}': {e}")
         return None
-
-
 
     def create_sheet_if_missing(self, service, sheet_name):
         """Create a sheet if it doesn't already exist."""
+        print(f"📑 Ensuring sheet exists: {sheet_name}")
         existing_sheets = service.spreadsheets().get(spreadsheetId=self.SPREADSHEET_ID).execute()
         sheet_titles = [sheet['properties']['title'] for sheet in existing_sheets.get('sheets', [])]
 
@@ -76,32 +75,42 @@ class WillScraper:
             requests = [{"addSheet": {"properties": {"title": sheet_name}}}]
             body = {"requests": requests}
             service.spreadsheets().batchUpdate(spreadsheetId=self.SPREADSHEET_ID, body=body).execute()
-            print(f"✓ Created sheet: {sheet_name}")
+            print(f"✅ Created sheet: {sheet_name}")
+        else:
+            print(f"ℹ️ Sheet already exists: {sheet_name}")
 
     def search_month(self, month: int, start_date: datetime = None):
         """Perform search for a given month starting from a specific date."""
+        print(f"🔍 Searching wills for {self.YEAR}-{month:02d}...")
         self.driver.get(self.BASE_URL)
         self.wait.until(EC.presence_of_element_located(
             (By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxYear")
         ))
 
-        # Fill year & month
-        self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxYear").clear()
-        self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxYear").send_keys(self.YEAR)
+        # Set year
+        year_box = self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxYear")
+        year_box.clear()
+        year_box.send_keys(self.YEAR)
 
-        self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxMonth").clear()
-        self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxMonth").send_keys(str(month))
+        # Set month
+        month_box = self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxMonth")
+        month_box.clear()
+        month_box.send_keys(str(month))
 
-        # If we have a start_date in this month → fill day
+        # Optional: start day if needed
         if start_date and start_date.year == int(self.YEAR) and start_date.month == month:
-            self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxDay").clear()
-            self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxDay").send_keys(str(start_date.day))
+            print(f"⏩ Starting from day {start_date.day}")
+            day_box = self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxDay")
+            day_box.clear()
+            day_box.send_keys(str(start_date.day))
 
         # Click Search
         self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__ButtonSearch").click()
+        time.sleep(2)
 
     def process_results(self, month: int, start_date: str):
         """Process all rows in search results for a given month."""
+        print("📊 Processing search results...")
         rows = self.driver.find_elements(By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
 
         for row_index in range(1, len(rows)):
@@ -117,18 +126,18 @@ class WillScraper:
                         break
 
                     death_date = cols[4].text.strip()
-                    death_date_obj = datetime.strptime(death_date, "%m/%d/%Y")  # Adjust date format as necessary
+                    death_date_obj = datetime.strptime(death_date, "%m/%d/%Y")
 
-                    # Skip dates before the start date
                     if start_date and death_date_obj < start_date:
+                        print(f"⏭️ Skipping row {row_index} before start date ({death_date})")
                         break
 
                     last_name = cols[1].text.strip()
                     first_name = cols[2].text.strip()
+                    print(f"➡️ Found record: {last_name}, {first_name}, DoD {death_date}")
 
                     details_link = cols[0].find_element(By.TAG_NAME, "a")
                     self.driver.execute_script("arguments[0].click();", details_link)
-
                     self.wait.until(EC.presence_of_element_located(
                         (By.XPATH, "//h2[text()='Personal Representatives']")
                     ))
@@ -137,7 +146,7 @@ class WillScraper:
                         By.XPATH, "//h2[text()='Personal Representatives']/following-sibling::table[1]/tbody/tr"
                     )
 
-                    if len(pr_table) > 1:  # skip header row
+                    if len(pr_table) > 1:
                         for rep_row in pr_table[1:]:
                             rep_cols = rep_row.find_elements(By.TAG_NAME, "td")
                             pr_name = rep_cols[0].text.strip()
@@ -145,6 +154,8 @@ class WillScraper:
 
                             estate_date = self.safe_find("//label[contains(text(),'Date Estate Opened')]/../following-sibling::td")
                             decedent_address = self.safe_find("//label[contains(text(),'Decedent Address')]/../following-sibling::td")
+
+                            print(f"   👤 PR: {pr_name}, Address: {pr_address}")
 
                             self.results.append({
                                 "Year": self.YEAR,
@@ -162,6 +173,7 @@ class WillScraper:
                     self.wait.until(EC.presence_of_element_located(
                         (By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
                     ))
+                    time.sleep(1)
 
                     success = True
 
@@ -170,18 +182,20 @@ class WillScraper:
                     print(f"[Retry {retries}/{self.MAX_RETRIES}] Error on row {row_index} (month {month}): {e}")
                     time.sleep(2)
                     if retries == self.MAX_RETRIES:
-                        print(f"❌ Skipping row {row_index} in {self.YEAR}-{month} after {self.MAX_RETRIES} retries")
+                        print(f"❌ Skipping row {row_index} in {self.YEAR}-{month}")
 
     def save_to_google_sheets(self):
         """Append results to Google Sheets."""
+        print("💾 Saving results to Google Sheets...")
         service = build('sheets', 'v4', credentials=self.get_google_credentials())
         for result in self.results:
             self.append_row(service, result)
+        print(f"✅ Saved {len(self.results)} records to Google Sheets")
 
     def append_row(self, service, result):
         """Append a single row to Google Sheets."""
         sheet_name = f"{self.YEAR}-{result['Month']:02d}"
-        self.create_sheet_if_missing(service, sheet_name)  # Create sheet if missing
+        self.create_sheet_if_missing(service, sheet_name)
 
         values = [[
             result['Year'],
@@ -195,6 +209,7 @@ class WillScraper:
             result['Decedent Address'],
         ]]
         body = {'values': values}
+
         service.spreadsheets().values().append(
             spreadsheetId=self.SPREADSHEET_ID,
             range=f"'{sheet_name}'!A1",
@@ -208,6 +223,7 @@ class WillScraper:
         return service_account.Credentials.from_service_account_info(json.loads(creds_raw))
 
     def run(self):
+        print("▶️ Starting Will Scraper...")
         last_date = self.get_last_scraped_date()
         start_date = last_date + timedelta(days=1) if last_date else None
         current_month = datetime.now().month
@@ -217,12 +233,15 @@ class WillScraper:
             self.YEAR = str(current_year)
 
         for month in range(1, current_month + 1):
-            print(f"🔎 Searching {self.YEAR}-{month:02d}")
+            print(f"🔎 Running search for {self.YEAR}-{month:02d}")
             self.search_month(month, start_date)
+            self.process_results(month, start_date)
             self.save_to_google_sheets()
             self.results = []
+            time.sleep(2)
 
         self.driver.quit()
+        print("🏁 Finished scraping!")
 
 
 if __name__ == "__main__":
