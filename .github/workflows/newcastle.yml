@@ -2,7 +2,7 @@ name: Will Scraper
 
 on:
   schedule:
-    - cron: '0 0 1 * *'  # Runs on the first of every month
+    - cron: "10 14 * * *"  # Runs on the first of every month
   workflow_dispatch:
 
 jobs:
