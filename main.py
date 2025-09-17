@@ -343,7 +343,7 @@ class WillScraper:
         """Process all rows in search results for a given month."""
         print("📊 Processing search results...")
         rows = self.driver.find_elements(By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
-
+    
         for row_index in range(1, len(rows)):  # skip header row
             retries, success = 0, False
             while retries < self.MAX_RETRIES and not success:
@@ -351,16 +351,19 @@ class WillScraper:
                     rows = self.driver.find_elements(By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
                     row = rows[row_index]
                     cols = row.find_elements(By.TAG_NAME, "td")
-                    if not cols:
-                        break
-
-                    # Extract summary columns
+    
+                    # ✅ Skip rows without enough columns
+                    if len(cols) < 6:
+                        print(f"⚠️ Skipping row {row_index} ({year}-{month}) - insufficient columns")
+                        break  
+    
+                    # Extract summary columns safely
                     will_file = cols[0].text.strip()
                     last_name = cols[1].text.strip()
                     first_name = cols[2].text.strip()
                     death_date = cols[4].text.strip()
                     last_filing = cols[5].text.strip()
-
+    
                     # Open details
                     details_link = cols[0].find_element(By.TAG_NAME, "a")
                     self.driver.execute_script("arguments[0].click();", details_link)
@@ -369,7 +372,7 @@ class WillScraper:
                             (By.XPATH, "//h2[text()='Personal Representatives'] | //h2[text()='Decedent Information']")
                         )
                     )
-
+    
                     # Extract estate dates
                     estate_admin = self.safe_find(
                         "//label[contains(text(),'Date Estate Opened (Administration)')]/../following-sibling::td"
@@ -378,23 +381,23 @@ class WillScraper:
                         "//label[contains(text(),'Date Estate Opened (Testamentary)')]/../following-sibling::td"
                     )
                     estate_date = estate_admin if estate_admin else estate_test
-
+    
                     # Extract decedent address
                     decedent_address = self.safe_find(
                         "//label[contains(text(),'Decedent Address')]/../following-sibling::td"
                     )
-
+    
                     # Extract Personal Representatives table
                     pr_table = self.driver.find_elements(
                         By.XPATH, "//h2[text()='Personal Representatives']/following-sibling::table[1]/tbody/tr"
                     )
-
+    
                     if len(pr_table) > 1:
                         for rep_row in pr_table[1:]:
                             rep_cols = rep_row.find_elements(By.TAG_NAME, "td")
-                            pr_name = rep_cols[0].text.strip()
-                            pr_address = " ".join([c.text.strip() for c in rep_cols[1:]])
-
+                            pr_name = rep_cols[0].text.strip() if len(rep_cols) > 0 else ""
+                            pr_address = " ".join([c.text.strip() for c in rep_cols[1:]]) if len(rep_cols) > 1 else ""
+    
                             self.results.append({
                                 "Will File #": will_file,
                                 "Last Filing Date": last_filing,
@@ -414,7 +417,7 @@ class WillScraper:
                             "Personal Representative Address": "",
                             "Decedent Address": decedent_address,
                         })
-
+    
                     # Back to list
                     self.driver.back()
                     self.wait.until(
@@ -427,6 +430,7 @@ class WillScraper:
                     time.sleep(2)
                     if retries == self.MAX_RETRIES:
                         print(f"❌ Skipping row {row_index} in {year}-{month}")
+
 
     def save_to_google_sheets(self, year, month):
         """Batch save results for one month into Google Sheets."""
