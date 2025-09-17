@@ -280,6 +280,7 @@ class WillScraper:
         "Personal Representative Name",
         "Personal Representative Address",
         "Decedent Address",
+        "Status",  # ✅ New column for status
     ]
 
     def __init__(self, headless=False):
@@ -418,6 +419,7 @@ class WillScraper:
                                     "Personal Representative Name": pr_name,
                                     "Personal Representative Address": pr_address,
                                     "Decedent Address": decedent_address,
+                                    "Status": "NEW",  # default as NEW
                                 })
 
                     # Back to list
@@ -439,9 +441,20 @@ class WillScraper:
         sheet_name = f"{year}_{datetime(year, month, 1).strftime('%b')}"
         self.create_sheet_if_missing(service, sheet_name)
 
-        values = []
+        # ✅ Get existing data
+        existing_data = service.spreadsheets().values().get(
+            spreadsheetId=self.SPREADSHEET_ID,
+            range=f"'{sheet_name}'!A2:H"
+        ).execute().get("values", [])
+
+        existing_wills = {row[0]: idx for idx, row in enumerate(existing_data, start=2)}  # Will File # → row number
+
+        new_values = []
+        updates = []
+
         for result in self.results:
-            values.append([
+            will_file = result["Will File #"]
+            row_data = [
                 result.get("Will File #", ""),
                 result.get("Last Filing Date", ""),
                 result.get("Date of Death", ""),
@@ -449,22 +462,40 @@ class WillScraper:
                 result.get("Personal Representative Name", ""),
                 result.get("Personal Representative Address", ""),
                 result.get("Decedent Address", ""),
-            ])
+                result.get("Status", "NEW"),
+            ]
 
-        if values:
-            body = {"values": values}
+            if will_file in existing_wills:
+                # ✅ If already exists, mark OLD
+                updates.append({
+                    "range": f"'{sheet_name}'!H{existing_wills[will_file]}",
+                    "values": [["OLD"]],
+                })
+            else:
+                # ✅ Append only new records
+                new_values.append(row_data)
+
+        # Write updates (marking OLD)
+        if updates:
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=self.SPREADSHEET_ID,
+                body={"valueInputOption": "RAW", "data": updates},
+            ).execute()
+
+        # Append new rows
+        if new_values:
             service.spreadsheets().values().append(
                 spreadsheetId=self.SPREADSHEET_ID,
                 range=f"'{sheet_name}'!A2",
                 valueInputOption="RAW",
-                body=body,
+                body={"values": new_values},
             ).execute()
 
-        print(f"✅ Saved {len(values)} records to Google Sheets ({sheet_name})")
+        print(f"✅ Added {len(new_values)} new records, updated {len(updates)} old records ({sheet_name})")
 
-        # ✅ Update summary sheet
+        # ✅ Update summary
         self.create_sheet_if_missing(service, "Summary")
-        summary_row = [sheet_name, len(values), datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+        summary_row = [sheet_name, len(new_values), datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
         service.spreadsheets().values().append(
             spreadsheetId=self.SPREADSHEET_ID,
             range="'Summary'!A2",
@@ -476,10 +507,8 @@ class WillScraper:
     def run(self):
         print("▶️ Starting Will Scraper...")
         today = datetime.now()
-        last_month_date = today.replace(day=1) - timedelta(days=1)
-
-        months_to_scrape = [(last_month_date.year, last_month_date.month),
-                            (today.year, today.month)]
+        # ✅ Only run for current month
+        months_to_scrape = [(today.year, today.month)]
         print(f"📆 Months to scrape: {months_to_scrape}")
 
         for year, month in months_to_scrape:
@@ -494,10 +523,5 @@ class WillScraper:
 
 if __name__ == "__main__":
     scraper = WillScraper(headless=True)
-    scraper.run()
-
-
-if __name__ == "__main__":
-    scraper = WillScraper(headless=True)  # set False if you want to see browser
     scraper.run()
 
