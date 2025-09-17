@@ -481,34 +481,39 @@ class WillScraper:
     def run(self):
         print("▶️ Starting Will Scraper...")
         today = datetime.now()
-
+        current_year, current_month = today.year, today.month
+    
+        # Always scrape previous month + current month on first run
         service = build("sheets", "v4", credentials=self.get_google_credentials())
         spreadsheet = service.spreadsheets().get(spreadsheetId=self.SPREADSHEET_ID).execute()
-        existing_sheets = [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
-
-        # First run → scrape last 2 months + current
-        if len(existing_sheets) <= 1:  # only Summary or empty
-            months_to_scrape = []
-            for i in range(2, -1, -1):
-                m = today.month - i
-                y = today.year
-                if m <= 0:
-                    m += 12
-                    y -= 1
-                months_to_scrape.append((y, m))
+        sheet_titles = [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
+    
+        months_to_scrape = []
+    
+        # If current month sheet not found → scrape last month + current month
+        current_sheet = f"{current_year}_{today.strftime('%b')}"
+        if current_sheet not in sheet_titles:
+            last_month_date = today.replace(day=1) - timedelta(days=1)
+            last_sheet = f"{last_month_date.year}_{last_month_date.strftime('%b')}"
+            months_to_scrape.append((last_month_date.year, last_month_date.month))
+            months_to_scrape.append((current_year, current_month))
         else:
-            # Subsequent runs → only current month
-            months_to_scrape = [(today.year, today.month)]
-
+            # Already scraped before → only update current month
+            months_to_scrape.append((current_year, current_month))
+    
+        print(f"📆 Months to scrape: {months_to_scrape}")
+    
         for year, month in months_to_scrape:
-            print(f"📆 Processing {year}-{month:02d}")
             self.search_month(year, month)
             self.process_results(year, month)
-            self.save_to_google_sheets(year, month)
+            self.save_to_google_sheets()
             self.results = []
-
+    
+        # Update summary after scraping all data
+        self.update_summary(service)
         self.driver.quit()
         print("🏁 Finished scraping!")
+
 if __name__ == "__main__":
     scraper = WillScraper(headless=True)
     scraper.run()
