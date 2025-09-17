@@ -255,7 +255,6 @@
 
 
 
-
 import os
 import time
 import json
@@ -273,6 +272,15 @@ class WillScraper:
     BASE_URL = "https://www3.newcastlede.gov/will/search/"
     MAX_RETRIES = 5
     SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
+    HEADERS = [
+        "Will File #", 
+        "Last Filing Date", 
+        "Date of Death", 
+        "Date Estate Opened", 
+        "Personal Representative Name", 
+        "Personal Representative Address", 
+        "Decedent Address"
+    ]
 
     def __init__(self, headless=False):
         print("🚀 Initializing WebDriver...")
@@ -312,8 +320,66 @@ class WillScraper:
                 spreadsheetId=self.SPREADSHEET_ID, body=body
             ).execute()
             print(f"✅ Created sheet: {sheet_name}")
+            
+            # Add headers to the new sheet
+            body = {"values": [self.HEADERS]}
+            service.spreadsheets().values().update(
+                spreadsheetId=self.SPREADSHEET_ID,
+                range=f"'{sheet_name}'!A1",
+                valueInputOption="RAW",
+                body=body,
+            ).execute()
+            print(f"✅ Added headers to sheet: {sheet_name}")
         else:
             print(f"ℹ️ Sheet already exists: {sheet_name}")
+
+    def update_summary_sheet(self, service):
+        """Update the summary sheet with counts from all monthly sheets"""
+        print("📊 Updating summary sheet...")
+        
+        # Get all sheets in the spreadsheet
+        spreadsheet = service.spreadsheets().get(
+            spreadsheetId=self.SPREADSHEET_ID
+        ).execute()
+        sheets = spreadsheet.get('sheets', [])
+        
+        # Filter for monthly sheets (format: YYYY_Mon)
+        monthly_sheets = []
+        for sheet in sheets:
+            title = sheet['properties']['title']
+            if title != "Summary" and "_" in title:
+                monthly_sheets.append(title)
+        
+        # Prepare summary data
+        summary_data = [["Month", "Records Count"]]
+        for sheet_name in sorted(monthly_sheets):
+            # Get the count of records in this sheet (excluding header)
+            result = service.spreadsheets().values().get(
+                spreadsheetId=self.SPREADSHEET_ID,
+                range=f"'{sheet_name}'!A2:G"
+            ).execute()
+            values = result.get('values', [])
+            count = len(values)
+            summary_data.append([sheet_name, count])
+        
+        # Update or create summary sheet
+        if "Summary" not in [s['properties']['title'] for s in sheets]:
+            requests = [{"addSheet": {"properties": {"title": "Summary"}}}]
+            body = {"requests": requests}
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=self.SPREADSHEET_ID, body=body
+            ).execute()
+            print("✅ Created Summary sheet")
+        
+        # Update summary sheet with data
+        body = {"values": summary_data}
+        service.spreadsheets().values().update(
+            spreadsheetId=self.SPREADSHEET_ID,
+            range="'Summary'!A1",
+            valueInputOption="RAW",
+            body=body,
+        ).execute()
+        print("✅ Updated Summary sheet")
 
     def search_month(self, year: int, month: int):
         print(f"🔍 Searching wills for {year}-{month:02d}...")
@@ -352,7 +418,6 @@ class WillScraper:
                         break
 
                     # Extract main row fields (use safe defaults if missing)
-                    will_file = cols[0].text.strip() if len(cols) > 0 else ""
                     last_filing = cols[5].text.strip() if len(cols) > 5 else ""
                     death_date = cols[4].text.strip() if len(cols) > 4 else ""
 
@@ -365,18 +430,23 @@ class WillScraper:
                         )
                     )
 
+                    # Get Will File # from the details page (not the label)
+                    will_file = self.safe_find(
+                        "//label[contains(text(),'Will File #:')]/following-sibling::td"
+                    )
+
                     # Estate dates
                     estate_admin = self.safe_find(
-                        "//label[contains(text(),'Date Estate Opened (Administration)')]/../following-sibling::td"
+                        "//label[contains(text(),'Date Estate Opened (Administration)')]/following-sibling::td"
                     )
                     estate_test = self.safe_find(
-                        "//label[contains(text(),'Date Estate Opened (Testamentary)')]/../following-sibling::td"
+                        "//label[contains(text(),'Date Estate Opened (Testamentary)')]/following-sibling::td"
                     )
                     estate_date = estate_admin if estate_admin else estate_test
 
                     # Decedent address
                     decedent_address = self.safe_find(
-                        "//label[contains(text(),'Decedent Address')]/../following-sibling::td"
+                        "//label[contains(text(),'Decedent Address')]/following-sibling::td"
                     )
 
                     # Representatives
@@ -441,6 +511,9 @@ class WillScraper:
                 body=body,
             ).execute()
 
+        # Update the summary sheet
+        self.update_summary_sheet(service)
+
         print(f"✅ Saved {len(values)} records to Google Sheets ({sheet_name})")
 
     def run(self):
@@ -464,5 +537,4 @@ class WillScraper:
 if __name__ == "__main__":
     scraper = WillScraper(headless=True)  # set False if you want to see browser
     scraper.run()
-
 
