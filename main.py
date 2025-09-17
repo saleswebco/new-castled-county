@@ -260,12 +260,11 @@
 
 
 
-
-
 import os
 import time
 import json
 from datetime import datetime, timedelta
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from selenium import webdriver
@@ -301,11 +300,11 @@ class WillScraper:
             return default
 
     def create_sheet_if_missing(self, service, sheet_name):
-        """Ensure the sheet exists and has correct header"""
+        print(f"📑 Ensuring sheet exists: {sheet_name}")
         existing_sheets = service.spreadsheets().get(
             spreadsheetId=self.SPREADSHEET_ID
         ).execute()
-        sheet_titles = [s["properties"]["title"] for s in existing_sheets.get("sheets", [])]
+        sheet_titles = [sheet["properties"]["title"] for sheet in existing_sheets.get("sheets", [])]
 
         if sheet_name not in sheet_titles:
             requests = [{"addSheet": {"properties": {"title": sheet_name}}}]
@@ -314,38 +313,11 @@ class WillScraper:
                 spreadsheetId=self.SPREADSHEET_ID, body=body
             ).execute()
             print(f"✅ Created sheet: {sheet_name}")
+        else:
+            print(f"ℹ️ Sheet already exists: {sheet_name}")
 
-            # Add header row
-            header = [[
-                "Year", "Month", "Last Name", "First Name", "Date of Death",
-                "Personal Representative Name", "Personal Representative Address",
-                "Date Estate Opened", "Decedent Address"
-            ]]
-            service.spreadsheets().values().append(
-                spreadsheetId=self.SPREADSHEET_ID,
-                range=f"'{sheet_name}'!A1",
-                valueInputOption="RAW",
-                body={"values": header},
-            ).execute()
-
-    def sheet_records_set(self, service, sheet_name):
-        """Return set of (Last Name, First Name, Date of Death) already in the sheet"""
-        try:
-            result = service.spreadsheets().values().get(
-                spreadsheetId=self.SPREADSHEET_ID,
-                range=f"'{sheet_name}'!C:E"  # Last Name, First Name, Date of Death
-            ).execute()
-            values = result.get("values", [])
-            records = set()
-            for row in values[1:]:  # skip header
-                if len(row) >= 3:
-                    records.add((row[0].strip(), row[1].strip(), row[2].strip()))
-            return records
-        except:
-            return set()
-
-    def search_month(self, year: int, month: int):
-        """Search by month/year"""
+    def search_month(self, year, month):
+        """Search for wills in a given month."""
         print(f"🔍 Searching wills for {year}-{month:02d}...")
         self.driver.get(self.BASE_URL)
         self.wait.until(
@@ -354,19 +326,21 @@ class WillScraper:
             )
         )
 
+        # Fill in year + month
         year_box = self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxYear")
-        month_box = self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxMonth")
-
         year_box.clear()
         year_box.send_keys(str(year))
+
+        month_box = self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__TextBoxMonth")
         month_box.clear()
         month_box.send_keys(str(month))
 
+        # Search
         self.driver.find_element(By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1__ButtonSearch").click()
         time.sleep(2)
 
-    def process_results(self, year: int, month: int):
-        """Process all rows for a given month"""
+    def process_results(self, year, month):
+        """Process results for a given month."""
         print("📊 Processing search results...")
         rows = self.driver.find_elements(By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
 
@@ -381,10 +355,12 @@ class WillScraper:
                     if not cols:
                         break
 
+                    will_file = cols[0].text.strip()
                     last_name = cols[1].text.strip()
                     first_name = cols[2].text.strip()
                     death_date = cols[4].text.strip()
 
+                    # Click into details
                     details_link = cols[0].find_element(By.TAG_NAME, "a")
                     self.driver.execute_script("arguments[0].click();", details_link)
                     self.wait.until(
@@ -393,17 +369,27 @@ class WillScraper:
                         )
                     )
 
-                    # Estate date logic
-                    estate_admin = self.safe_find("//label[contains(text(),'Date Estate Opened (Administration)')]/../following-sibling::td")
-                    estate_test = self.safe_find("//label[contains(text(),'Date Estate Opened (Testamentary)')]/../following-sibling::td")
-                    estate_date = estate_admin if estate_admin else (estate_test if estate_test else "")
+                    # Extract fields
+                    estate_admin = self.safe_find(
+                        "//label[contains(text(),'Date Estate Opened (Administration)')]/../following-sibling::td"
+                    )
+                    estate_test = self.safe_find(
+                        "//label[contains(text(),'Date Estate Opened (Testamentary)')]/../following-sibling::td"
+                    )
+                    estate_date = estate_admin if estate_admin else estate_test
 
-                    decedent_address = self.safe_find("//label[contains(text(),'Decedent Address')]/../following-sibling::td")
+                    last_filing = self.safe_find(
+                        "//label[contains(text(),'Last Filing Date')]/../following-sibling::td"
+                    )
+                    decedent_address = self.safe_find(
+                        "//label[contains(text(),'Decedent Address')]/../following-sibling::td"
+                    )
 
-                    # PR table
+                    # Representative(s)
                     pr_table = self.driver.find_elements(
                         By.XPATH, "//h2[text()='Personal Representatives']/following-sibling::table[1]/tbody/tr"
                     )
+
                     if len(pr_table) > 1:
                         for rep_row in pr_table[1:]:
                             rep_cols = rep_row.find_elements(By.TAG_NAME, "td")
@@ -411,67 +397,91 @@ class WillScraper:
                             pr_address = " ".join([c.text.strip() for c in rep_cols[1:]])
 
                             self.results.append({
-                                "Year": year,
-                                "Month": month,
-                                "Last Name": last_name,
-                                "First Name": first_name,
+                                "Will File #": will_file,
+                                "Last Filing Date": last_filing,
                                 "Date of Death": death_date,
+                                "Date Estate Opened": estate_date,
                                 "Personal Representative Name": pr_name,
                                 "Personal Representative Address": pr_address,
-                                "Date Estate Opened": estate_date,
                                 "Decedent Address": decedent_address,
                             })
+                    else:
+                        # No representatives
+                        self.results.append({
+                            "Will File #": will_file,
+                            "Last Filing Date": last_filing,
+                            "Date of Death": death_date,
+                            "Date Estate Opened": estate_date,
+                            "Personal Representative Name": "",
+                            "Personal Representative Address": "",
+                            "Decedent Address": decedent_address,
+                        })
 
+                    # Go back
                     self.driver.back()
                     self.wait.until(
                         EC.presence_of_element_located(
                             (By.XPATH, "//table[contains(@class,'grid')]/tbody/tr")
                         )
                     )
-                    time.sleep(1)
                     success = True
                 except Exception as e:
                     retries += 1
                     print(f"[Retry {retries}/{self.MAX_RETRIES}] Error on row {row_index} ({year}-{month}): {e}")
                     time.sleep(2)
                     if retries == self.MAX_RETRIES:
-                        print(f"❌ Skipping row {row_index} in {year}-{month}")
+                        print(f"❌ Skipping row {row_index} for {year}-{month}")
 
-    def save_to_google_sheets(self, year: int, month: int):
-        print("💾 Saving results to Google Sheets...")
+    def save_to_google_sheets(self, year, month):
+        print(f"💾 Saving results for {year}-{month:02d} to Google Sheets...")
         service = build("sheets", "v4", credentials=self.get_google_credentials())
+        for result in self.results:
+            self.append_row(service, result, year, month)
+        print(f"✅ Saved {len(self.results)} records to Google Sheets")
+
+    def append_row(self, service, result, year, month):
         sheet_name = f"{year}_{datetime(year, month, 1).strftime('%b')}"
         self.create_sheet_if_missing(service, sheet_name)
 
-        existing_records = self.sheet_records_set(service, sheet_name)
-        new_rows = []
-
-        for result in self.results:
-            key = (result["Last Name"], result["First Name"], result["Date of Death"])
-            if key not in existing_records:
-                new_rows.append([
-                    result["Year"],
-                    result["Month"],
-                    result["Last Name"],
-                    result["First Name"],
-                    result["Date of Death"],
-                    result["Personal Representative Name"],
-                    result["Personal Representative Address"],
-                    result["Date Estate Opened"],
-                    result["Decedent Address"],
-                ])
-
-        if new_rows:
-            body = {"values": new_rows}
-            service.spreadsheets().values().append(
+        # Insert header if empty
+        result_range = service.spreadsheets().values().get(
+            spreadsheetId=self.SPREADSHEET_ID,
+            range=f"'{sheet_name}'!A1:A1"
+        ).execute()
+        if "values" not in result_range:
+            headers = [[
+                "Will File #",
+                "Last Filing Date",
+                "Date of Death",
+                "Date Estate Opened",
+                "Personal Representative Name",
+                "Personal Representative Address",
+                "Decedent Address"
+            ]]
+            service.spreadsheets().values().update(
                 spreadsheetId=self.SPREADSHEET_ID,
                 range=f"'{sheet_name}'!A1",
                 valueInputOption="RAW",
-                body=body,
+                body={"values": headers}
             ).execute()
-            print(f"✅ Added {len(new_rows)} new records to {sheet_name}")
-        else:
-            print("ℹ️ No new records to add.")
+
+        # Append row
+        values = [[
+            result.get("Will File #", ""),
+            result.get("Last Filing Date", ""),
+            result.get("Date of Death", ""),
+            result.get("Date Estate Opened", ""),
+            result.get("Personal Representative Name", ""),
+            result.get("Personal Representative Address", ""),
+            result.get("Decedent Address", ""),
+        ]]
+        body = {"values": values}
+        service.spreadsheets().values().append(
+            spreadsheetId=self.SPREADSHEET_ID,
+            range=f"'{sheet_name}'!A1",
+            valueInputOption="RAW",
+            body=body,
+        ).execute()
 
     def get_google_credentials(self):
         creds_raw = os.environ.get("GOOGLE_CREDENTIALS")
@@ -481,40 +491,78 @@ class WillScraper:
         print("▶️ Starting Will Scraper...")
         today = datetime.now()
         current_year, current_month = today.year, today.month
-    
-        # Always scrape previous month + current month on first run
+
+        # Connect to Sheets
         service = build("sheets", "v4", credentials=self.get_google_credentials())
         spreadsheet = service.spreadsheets().get(spreadsheetId=self.SPREADSHEET_ID).execute()
         sheet_titles = [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
-    
+
         months_to_scrape = []
-    
+
         # If current month sheet not found → scrape last month + current month
         current_sheet = f"{current_year}_{today.strftime('%b')}"
         if current_sheet not in sheet_titles:
             last_month_date = today.replace(day=1) - timedelta(days=1)
-            last_sheet = f"{last_month_date.year}_{last_month_date.strftime('%b')}"
             months_to_scrape.append((last_month_date.year, last_month_date.month))
             months_to_scrape.append((current_year, current_month))
         else:
             # Already scraped before → only update current month
             months_to_scrape.append((current_year, current_month))
-    
+
         print(f"📆 Months to scrape: {months_to_scrape}")
-    
+
         for year, month in months_to_scrape:
             self.search_month(year, month)
             self.process_results(year, month)
-            self.save_to_google_sheets()
+            self.save_to_google_sheets(year, month)
             self.results = []
-    
+
         # Update summary after scraping all data
         self.update_summary(service)
         self.driver.quit()
         print("🏁 Finished scraping!")
 
+    def update_summary(self, service):
+        """Create/update a summary sheet with counts by month."""
+        print("📑 Updating Summary sheet...")
+        self.create_sheet_if_missing(service, "Summary")
+
+        spreadsheet = service.spreadsheets().get(
+            spreadsheetId=self.SPREADSHEET_ID
+        ).execute()
+        sheet_titles = [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
+        data = [["Sheet", "Total Records", "Last Updated"]]
+
+        for title in sheet_titles:
+            if title == "Summary":
+                continue
+            try:
+                result = service.spreadsheets().values().get(
+                    spreadsheetId=self.SPREADSHEET_ID,
+                    range=f"'{title}'!A:A"
+                ).execute()
+                values = result.get("values", [])
+                total = len(values) - 1 if values else 0  # exclude header
+                data.append([title, total, datetime.now().strftime("%Y-%m-%d %H:%M")])
+            except Exception as e:
+                print(f"⚠️ Could not read {title}: {e}")
+
+        # Rewrite Summary
+        service.spreadsheets().values().clear(
+            spreadsheetId=self.SPREADSHEET_ID,
+            range="Summary!A:Z"
+        ).execute()
+        service.spreadsheets().values().update(
+            spreadsheetId=self.SPREADSHEET_ID,
+            range="Summary!A1",
+            valueInputOption="RAW",
+            body={"values": data},
+        ).execute()
+        print("✅ Summary sheet updated")
+
+
 if __name__ == "__main__":
-    scraper = WillScraper(headless=True)
+    scraper = WillScraper(headless=True)  # set to False for debugging
     scraper.run()
 
 
